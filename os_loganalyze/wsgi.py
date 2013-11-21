@@ -20,73 +20,18 @@ from copy import deepcopy
 import fileinput
 import os.path
 import re
-import sys
 import wsgiref.util
 
-from os_loganalyze import filters as parsers
-from os_loganalyze import outputter
+from os_loganalyze import common
 from os_loganalyze import printer
-
-# which logs support severity
-SUPPORTS_SEV_REGEXP = r'(screen-(n-|c-|q-|g-|h-|ceil|key)|tempest\.txt)'
-
-# regular expressions to match against for various log types
-LOG_TYPE_REGEXPS = {
-    'console': 'console',
-    'devstack': 'stack',
-    'keystone': 'key'
-    # oslo is the default
-}
-
-# the log severity levels
-SEVS = {
-    'NONE': 0,
-    'DEBUG': 1,
-    'INFO': 2,
-    'AUDIT': 3,
-    'TRACE': 4,
-    'WARNING': 5,
-    'ERROR': 6
-    }
 
 
 def _html_close():
     return ("</pre></body></html>\n")
 
 
-def _css_preamble(supports_sev, curr_sev, parameters):
-    """Write a valid html start with css that we need."""
-    header = """<html>
-<head>
-<style>
-a {color: #000; text-decoration: none}
-a:hover {text-decoration: underline}
-.DEBUG {color: #888}
-.ERROR {color: #c00; font-weight: bold}
-.TRACE {color: #c60}
-.WARNING {color: #D89100;  font-weight: bold}
-.INFO {color: #006; font-weight: bold}
-.selector, .selector a {color: #888}
-.selector a:hover {color: #c00}
-
-.lvl_NONE {color: rgb(136,136,136);}
-.lvl_AUDIT {color: rgb(136,136,136);}
-.lvl_TRACE {color: rgb(136,136,136);}
-.lvl_DEBUG {color: rgb(0,205,205);}
-.lvl_INFO {color: rgb(0,255,0);}
-.lvl_ERROR {color: rgb(204,0,0);}
-.lvl_WARNING {color: rgb(205,0,205);}
-
-.date {color: rgb(216,125,0);}
-.src {color: rgb(0,0,102);}
-.req_id {font-style: italic;}
-.msg_op {color: rgb(205,0,205);}
-.msg_num {font-style: italic;}
-.msg_content {font-weight:bold;}
-.msg_type {color: rgb(204,102,0);}
-</style>
-</head>
-<body>"""
+def css_preamble(supports_sev, parameters):
+    sev_header = ''
     if supports_sev:
         partial_params = deepcopy(parameters)
         pstr = ""
@@ -98,52 +43,32 @@ a:hover {text-decoration: underline}
                 params_pairs.extend([(k, v) for v in arr])
             pstr = '&' + '&'.join(k + '=' + v for k, v in params_pairs)
 
-        header += """
+        sev_header += """
 <span class='selector dynamic'>
 Display level: [
 """
-        sev_pairs = sorted(SEVS.items(), key=lambda x: x[1])
+        sev_pairs = sorted(common.SEVS.items(), key=lambda x: x[1])
         for sev, num in sev_pairs:
-            header += ('<a href="?level=' + sev + pstr + '">'
-                       + sev + "</a> | ")
+            sev_header += ('<a href="?level=' + sev + pstr + '">'
+                           + sev + "</a> | ")
 
-        header += "]</span>\n"
+        sev_header += "]</span>\n"
 
-    header += "<pre id='main_container'>\n"
-    return header
+    return common.css_preamble(body_extra=sev_header)
 
 
 def file_supports_sev(fname, parameters):
     sev_param = parameters.get('filter_sev', [None])[0]
     if sev_param is not None:
-        if sev_param.lower() == 'false':
-            return False
-        elif sev_param.lower() == 'true':
-            return True
-    elif parameters.get('level') is not None:
-        return True
-    else:
-        m = re.search(SUPPORTS_SEV_REGEXP, fname)
-        return m is not None
+        sev_param = sev_param.lower() == 'true'
+    level = parameters.get('level', [None])[0]
+    return common.file_supports_sev(fname, sev_param, level)
 
 
 def detect_log_type(fname, parameters):
     "Detect the type of the current log file"
-    # if the user has manually specified a log type, use that
-    if parameters.get('log_type', [None])[0] is not None:
-        return parameters['log_type']
-
-    local_fname = os.path.basename(fname)
-    for ltype, regexp in LOG_TYPE_REGEXPS.items():
-        if re.search(regexp, local_fname) is not None:
-            return ltype
-
-    # oslo is the default
-    return 'oslo'
-
-
-def not_html(fname):
-    return re.search('(\.html(\.gz)?)$', fname) is None
+    log_type = parameters.get('log_type', [None])[0]
+    return common.detect_log_type(fname, log_type)
 
 
 def escape_html(line):
@@ -188,72 +113,19 @@ def does_file_exist(fname):
 
 
 def build_matcher_formatter(fname, parameters, minsev, styler):
-    # build base matcher and formatter
-    matcher = None
-    formatter = None
-
-    log_style = detect_log_type(fname, parameters)
-
-    if log_style == 'devstack':
-        formatter = outputter.StackLogOutputter(styler=styler)
-        matcher = parsers.DevstackMetadataMatcher()
-    elif log_style == 'console':
-        formatter = outputter.ConsoleLogOutputter(styler=styler)
-        matcher = parsers.ConsoleMetadataMatcher()
-    elif log_style == 'keystone':
-        invert_order = (parameters.get('invert_order', ['False'])[0].lower()
-                        == 'true')
-        formatter = outputter.KeystoneLogOutputter(styler=styler,
-                                                   invert_order=invert_order)
-        matcher = parsers.KeystoneMetadataMatcher()
-    else:  # oslo-style
-        formatter = outputter.LogOutputter(styler=styler)
-        matcher = parsers.MetadataMatcher()
-
-    # initialize options
+    log_type = detect_log_type(fname, parameters)
+    invert_order = (parameters.get('invert_order', ['False'])[0]
+                    .lower() == 'true')
     supports_sev = file_supports_sev(fname, parameters)
+    skip_raw = (parameters.get('skip_raw', ['true'])[0].lower() == 'true')
+    skip_source = [cgi.escape(src).replace(' ', '+')
+                   for src in parameters.get('skip_source', [])]
 
-    should_skip_raw = True
-    if 'skip_raw' in parameters:
-        if cgi.escape(parameters['skip_raw'][0]).lower() == 'false':
-            should_skip_raw = False
-
-    skip_sources = []
-    if should_skip_raw:
-        skip_sources.append(r'\w+\.messaging\.io\.raw')
-
-    if 'skip_source' in parameters:
-        skip_sources.extend([cgi.escape(src).replace(' ', '+')
-                             for src in parameters['skip_source']])
-
-    # add on optional parts
-    if supports_sev:
-        levels_to_skip = [name for name, num in SEVS.items()
-                          if num < SEVS[minsev]]
-        if 'NONE' in levels_to_skip:
-            levels_to_skip.append(None)
-        matcher = matcher.chain(parsers.LevelSkipper(levels_to_skip))
-
-    if log_style in ['olso', 'keystone']:
-        matcher = matcher.chain(parsers.SourceSkipper(skip_sources))
-
-    if log_style == 'oslo':
-        matcher = (matcher.chain(parsers.MessageMatcher())
-                   .chain(parsers.MessageOpMatcher()))
-    elif log_style == 'keystone':
-        matcher = matcher.chain(parsers.KeystoneMessageOpMatcher())
-
-    if not not_html(fname):
-        matcher = matcher.chain(parsers.PreTagSkipper())
-
-#    if log_style in ['oslo', 'keystone']:
-#        matcher = matcher.chain(parsers.MessageTypeSkipper())
-
-    # add on the body matcher
-    matcher = matcher.chain(parsers.MessageBodyMatcher())
-
-    # return the results
-    return (matcher, formatter)
+    return common.build_matcher_formatter(fname, minsev, styler,
+                                          log_type, invert_order=invert_order,
+                                          supports_sev=supports_sev,
+                                          skip_raw=skip_raw,
+                                          skip_sources_in=skip_source)
 
 
 def html_filter(fname, minsev, environ):
@@ -262,7 +134,7 @@ def html_filter(fname, minsev, environ):
     This produces a stream of the htmlified logs which lets us return
     data quickly to the user, and use minimal memory in the process.
     """
-    should_escape = not_html(fname)
+    should_escape = common.not_html(fname)
 
     parameters = cgi.parse_qs(environ.get('QUERY_STRING', ''))
 
@@ -273,9 +145,7 @@ def html_filter(fname, minsev, environ):
                                                  minsev,
                                                  printer.HTMLStyler())
 
-    yield _css_preamble(supports_sev,
-                        parameters.get('level', ['NONE'])[0],
-                        parameters)
+    yield css_preamble(supports_sev, parameters)
 
     for line in fileinput.FileInput(fname, openhook=fileinput.hook_compressed):
         if should_escape:
@@ -289,33 +159,7 @@ def html_filter(fname, minsev, environ):
             continue
 
         yield formatter.output(res[0])
-    yield _html_close()
-
-
-def htmlify_stdin():
-    out = sys.stdout
-    out.write(_css_preamble(True, 'NONE', {}))
-
-    skip_sources = [r'\w+\.messaging\.io\.raw']
-
-    formatter = outputter.LogOutputter(styler=printer.HTMLStyler())
-    matcher = (parsers.MetadataMatcher()
-               .chain(parsers.SourceSkipper(skip_sources))
-               .chain(parsers.MessageMatcher())
-               .chain(parsers.MessageOpMatcher())
-               #.chain(parsers.MessageTypeSkipper())
-               .chain(parsers.MessageBodyMatcher()))
-
-    for line in fileinput.FileInput():
-        newline = escape_html(line)
-
-        res = matcher.run(newline, {})
-        if res is None:
-            continue
-
-        out.write(formatter.output(res[0]))
-
-    out.write(_html_close())
+    yield common.html_close()
 
 
 def safe_path(root, environ):
@@ -405,8 +249,3 @@ def application(environ, start_response, root_path=None):
         response_headers = [('Content-type', 'text/plain')]
         start_response(status, response_headers)
         return ['File Not Found']
-
-
-# for development purposes, makes it easy to test the filter output
-if __name__ == "__main__":
-    htmlify_stdin()
