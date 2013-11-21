@@ -141,7 +141,7 @@ def html_close():
     return ("</pre></body></html>\n")
 
 
-def css_preamble(head_extra='', body_extra=''):
+def css_preamble(head_extra='', body_extra='', css_extra=''):
     """Write a valid html start with css that we need."""
     header = """<!DOCTYPE html>
 <html>
@@ -172,7 +172,9 @@ a:hover {text-decoration: underline}
 .msg_num {font-style: italic;}
 .msg_content {font-weight:bold;}
 .msg_type {color: rgb(204,102,0);}
-</style>"""
+"""
+    header += css_extra
+    header += "\n</style>\n"
 
     header += head_extra
     header += """</head>

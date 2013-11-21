@@ -31,8 +31,82 @@ def _html_close():
 
 
 def css_preamble(supports_sev, parameters):
+    js_header = ''
     sev_header = ''
+    css_header = ''
     if supports_sev:
+        curr_sev = parameters.get('level', ['NONE'])[0]
+
+        # generate CSS for hiding sevs dynamically
+        for sev, lvl in common.SEVS.items():
+            lower_sevs = [name for name, num
+                          in common.SEVS.items() if num < lvl]
+            for lower_sev in lower_sevs:
+                css_header += ('.select_' + sev + ' div.'
+                               + lower_sev + " { display: none; }\n")
+
+        # generate the JS assist code
+        js_header = """
+<script type="text/javascript">
+    document.addEventListener('DOMContentLoaded', function(event) {
+        var selector = document.querySelector('span.selector.dynamic');
+        if (selector != null) {
+            var pre = document.getElementById('main_container');
+            var LEVELS = ["""
+        js_header += ', '.join(["'" + sev + "'" for sev in common.SEVS.keys()])
+        js_header += """];
+            var curr_href = window.location.href.split('?');
+            var query_str = [];
+            if (curr_href.length > 1) {
+                query_str = curr_href[1].split('&');
+            }
+            if (query_str.length > 0) {
+                var lvl = "NONE";
+                for (var i = 0; i < query_str.length; i++) {
+                    if (query_str[i].substr(0,5) == 'level') {
+                        lvl = query_str[i].split('=')[1];
+                        break;
+                    }
+                }
+                pre.classList.add('select_'+lvl);
+            }
+            var partial_query_str = query_str.join('&');
+
+            selector.addEventListener('click', function(event) {
+                if (event.target.tagName.toLowerCase() != 'a' ||
+                    event.target.getAttribute('data-dynamic') != 'true') {
+                    return;
+                }
+
+                var href = event.target.getAttribute('href').substr(1);
+                var lvl = "";
+                if (href.length == 0) lvl = "NONE";
+                else {
+                    var query_items = href.split('&');
+                    for (var i = 0; i < query_items.length; i++) {
+                        var query_item = query_items[i].split('=');
+                        if(query_item[0] == 'level') {
+                            lvl = query_item[1];
+                            break;
+                        }
+                    }
+                }
+                LEVELS.forEach(function(old_level) {
+                    pre.classList.remove('select_'+old_level);
+                });
+
+                pre.classList.add('select_'+lvl);
+                event.stopPropagation();
+                event.preventDefault();
+                var loc = event.target.getAttribute('href');
+                window.history.pushState({}, '', loc);
+            });
+        }
+    });
+</script>
+"""
+
+        # generate the level selector code
         partial_params = deepcopy(parameters)
         pstr = ""
         if partial_params.get('level') is not None:
@@ -47,14 +121,35 @@ def css_preamble(supports_sev, parameters):
 <span class='selector dynamic'>
 Display level: [
 """
+        if common.SEVS[curr_sev] > 0:
+            sev_header += "<a href='?level=NONE" + pstr + "'>ALL</a> |\n"
+        else:
+            sev_header += ("<a href='?level=NONE" + pstr + "'" +
+                           " data-dynamic='true'>ALL</a> |\n")
+
         sev_pairs = sorted(common.SEVS.items(), key=lambda x: x[1])
-        for sev, num in sev_pairs:
+        lower_sevs = [name for name, num in sev_pairs
+                      if num < common.SEVS[curr_sev] and num > 0]
+        higher_sevs = [name for name, num in sev_pairs
+                       if num >= common.SEVS[curr_sev]
+                       and num < common.SEVS['ERROR']
+                       and num > 0]
+
+        for sev in lower_sevs:
             sev_header += ('<a href="?level=' + sev + pstr + '">'
                            + sev + "</a> | ")
+        for sev in higher_sevs:
+            sev_header += ('<a href="?level=' + sev + pstr + '"' +
+                           ' data-dynamic="true">' + sev + "</a> | ")
+
+        sev_header += ('<a href="?level=ERROR' + pstr +
+                       '" data-dynamic="true">ERROR</a>')
 
         sev_header += "]</span>\n"
 
-    return common.css_preamble(body_extra=sev_header)
+    return common.css_preamble(head_extra=js_header,
+                               body_extra=sev_header,
+                               css_extra=css_header)
 
 
 def file_supports_sev(fname, parameters):
