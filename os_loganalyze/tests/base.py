@@ -75,14 +75,14 @@ class TestCase(testtools.TestCase):
         setup_testing_defaults(environ)
         return environ
 
-    def get_generator(self, fname, level=None, html=True):
+    def get_generator(self, fname, html=True, **extra_args):
         kwargs = {'PATH_INFO': '/htmlify/%s' % fname}
-
-        if level:
-            kwargs['QUERY_STRING'] = 'level=%s' % level
 
         if html:
             kwargs['HTTP_ACCEPT'] = 'text/html'
+
+        kwargs['QUERY_STRING'] = '&'.join([k + '=' + str(v) for k, v
+                                           in extra_args.items()])
 
         gen = log_wsgi.application(
             self.fake_env(**kwargs),

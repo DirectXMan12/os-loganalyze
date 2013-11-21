@@ -32,18 +32,18 @@ class TestFilters(base.TestCase):
 
         # first line is INFO
         line = gen.next()
-        self.assertIn("class='INFO", line)
-        self.assertIn("href='#_2013-09-27_18_22_11_248'", line)
+        self.assertIn("class=\"INFO", line)
+        self.assertIn('href="#2013-09-27_18_22_11_248"', line)
 
         # second line is an ERROR
         line = gen.next()
-        self.assertIn("class='ERROR", line)
-        self.assertIn("href='#_2013-09-27_18_22_11_249'", line)
+        self.assertIn("class=\"ERROR", line)
+        self.assertIn('href="#2013-09-27_18_22_11_249"', line)
 
         # third is a DEBUG
         line = gen.next()
-        self.assertIn("class='DEBUG", line)
-        self.assertIn("href='#_2013-09-27_18_22_11_249'", line)
+        self.assertIn("class=\"DEBUG", line)
+        self.assertIn('href="#2013-09-27_18_22_11_249"', line)
 
     def test_keystone_filters(self):
         gen = self.get_generator('screen-key.txt.gz', level='DEBUG')
@@ -52,8 +52,8 @@ class TestFilters(base.TestCase):
 
         # first line is DEBUG
         line = gen.next()
-        self.assertIn("class='DEBUG", line)
-        self.assertIn("href='#_2013-09-27_18_20_55_636'", line)
+        self.assertIn("class=\"DEBUG", line)
+        self.assertIn('href="#2013-09-27_18_20_55_636"', line)
 
     def test_devstack_filters(self):
         gen = self.get_generator('devstacklog.txt.gz')
@@ -62,17 +62,17 @@ class TestFilters(base.TestCase):
 
         # first line
         line = gen.next()
-        self.assertIn("href='#_2013-09-27_18_15_31'", line)
+        self.assertIn('href="#2013-09-27_18_15_31"', line)
 
     def test_devstack_filters_nodrop(self):
-        gen = self.get_generator('devstacklog.txt.gz', level='INFO')
+        gen = self.get_generator('devstacklog.txt.gz')
 
         header = gen.next()
         self.assertNotIn("Display level: ", header)
 
         # we shouldn't be dropping anything with the first line
         line = gen.next()
-        self.assertIn("href='#_2013-09-27_18_15_31'", line)
+        self.assertIn('href="#2013-09-27_18_15_31"', line)
 
     def test_html_file_filters(self):
         # do we avoid double escaping html files
@@ -81,14 +81,10 @@ class TestFilters(base.TestCase):
         header = gen.next()
         self.assertNotIn("Display level: ", header)
 
-        # we shouldn't be dropping anything with the first line
         line = gen.next()
-        self.assertEqual("<pre>\n", line)
+        self.assertIn('<a href="#2013-09-27_18_07_11_860" '
+                      'id="2013-09-27_18_07_11_860" class="date">', line)
 
         line = gen.next()
-        self.assertIn("<a name='_2013-09-27_18_07_11_860' "
-                      "class='date' href='#_2013-09-27_18_07_11_860'>", line)
-
-        line = gen.next()
-        self.assertIn("<a name='_2013-09-27_18_07_11_884' "
-                      "class='date' href='#_2013-09-27_18_07_11_884'>", line)
+        self.assertIn('<a href="#2013-09-27_18_07_11_884" '
+                      'id="2013-09-27_18_07_11_884" class="date">', line)

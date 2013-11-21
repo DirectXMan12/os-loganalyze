@@ -16,25 +16,29 @@
 
 
 import cgi
+from copy import deepcopy
 import fileinput
 import os.path
 import re
 import sys
 import wsgiref.util
 
+from os_loganalyze import filters as parsers
+from os_loganalyze import outputter
+from os_loganalyze import printer
+
 # which logs support severity
-SUPPORTS_SEV = '(screen-(n-|c-|q-|g-|h-|ceil|key)|tempest\.txt)'
+SUPPORTS_SEV_REGEXP = r'(screen-(n-|c-|q-|g-|h-|ceil|key)|tempest\.txt)'
 
-DATEFMT = '\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}((\.|\,)\d{3})?'
-STATUSFMT = '(DEBUG|INFO|WARNING|ERROR|TRACE|AUDIT)'
-KEY_COMPONENT = '\([^\)]+\):'
+# regular expressions to match against for various log types
+LOG_TYPE_REGEXPS = {
+    'console': 'console',
+    'devstack': 'stack',
+    'keystone': 'key'
+    # oslo is the default
+}
 
-OSLO_LOGMATCH = '^(?P<date>%s)(?P<pid> \d+)? (?P<status>%s)' % \
-    (DATEFMT, STATUSFMT)
-KEY_LOGMATCH = '^(?P<comp>%s) (?P<date>%s) (?P<status>%s)' % \
-    (KEY_COMPONENT, DATEFMT, STATUSFMT)
-
-
+# the log severity levels
 SEVS = {
     'NONE': 0,
     'DEBUG': 1,
@@ -47,66 +51,99 @@ SEVS = {
 
 
 def _html_close():
-    return ("</span></pre></body></html>\n")
+    return ("</pre></body></html>\n")
 
 
-def _css_preamble(supports_sev):
+def _css_preamble(supports_sev, curr_sev, parameters):
     """Write a valid html start with css that we need."""
     header = """<html>
 <head>
 <style>
 a {color: #000; text-decoration: none}
 a:hover {text-decoration: underline}
-.DEBUG, .DEBUG a {color: #888}
-.ERROR, .ERROR a {color: #c00; font-weight: bold}
-.TRACE, .TRACE a {color: #c60}
-.WARNING, .WARNING a {color: #D89100;  font-weight: bold}
-.INFO, .INFO a {color: #006; font-weight: bold}
+.DEBUG {color: #888}
+.ERROR {color: #c00; font-weight: bold}
+.TRACE {color: #c60}
+.WARNING {color: #D89100;  font-weight: bold}
+.INFO {color: #006; font-weight: bold}
 .selector, .selector a {color: #888}
 .selector a:hover {color: #c00}
+
+.lvl_NONE {color: rgb(136,136,136);}
+.lvl_AUDIT {color: rgb(136,136,136);}
+.lvl_TRACE {color: rgb(136,136,136);}
+.lvl_DEBUG {color: rgb(0,205,205);}
+.lvl_INFO {color: rgb(0,255,0);}
+.lvl_ERROR {color: rgb(204,0,0);}
+.lvl_WARNING {color: rgb(205,0,205);}
+
+.date {color: rgb(216,125,0);}
+.src {color: rgb(0,0,102);}
+.req_id {font-style: italic;}
+.msg_op {color: rgb(205,0,205);}
+.msg_num {font-style: italic;}
+.msg_content {font-weight:bold;}
+.msg_type {color: rgb(204,102,0);}
 </style>
+</head>
 <body>"""
     if supports_sev:
-        header = header + """
-<span class='selector'>
-Display level: [
-<a href='?'>ALL</a> |
-<a href='?level=DEBUG'>DEBUG</a> |
-<a href='?level=INFO'>INFO</a> |
-<a href='?level=AUDIT'>AUDIT</a> |
-<a href='?level=TRACE'>TRACE</a> |
-<a href='?level=WARNING'>WARNING</a> |
-<a href='?level=ERROR'>ERROR</a> ]
-</span>"""
+        partial_params = deepcopy(parameters)
+        pstr = ""
+        if partial_params.get('level') is not None:
+            del partial_params['level']
+        if len(partial_params) > 0:
+            params_pairs = []
+            for k, arr in partial_params.items():
+                params_pairs.extend([(k, v) for v in arr])
+            pstr = '&' + '&'.join(k + '=' + v for k, v in params_pairs)
 
-    header = header + "<pre><span>"
+        header += """
+<span class='selector dynamic'>
+Display level: [
+"""
+        sev_pairs = sorted(SEVS.items(), key=lambda x: x[1])
+        for sev, num in sev_pairs:
+            header += ('<a href="?level=' + sev + pstr + '">'
+                       + sev + "</a> | ")
+
+        header += "]</span>\n"
+
+    header += "<pre id='main_container'>\n"
     return header
 
 
-def file_supports_sev(fname):
-    m = re.search(SUPPORTS_SEV, fname)
-    return m is not None
+def file_supports_sev(fname, parameters):
+    sev_param = parameters.get('filter_sev', [None])[0]
+    if sev_param is not None:
+        if sev_param.lower() == 'false':
+            return False
+        elif sev_param.lower() == 'true':
+            return True
+    elif parameters.get('level') is not None:
+        return True
+    else:
+        m = re.search(SUPPORTS_SEV_REGEXP, fname)
+        return m is not None
+
+
+def detect_log_type(fname, parameters):
+    "Detect the type of the current log file"
+    # if the user has manually specified a log type, use that
+    if parameters.get('log_type', [None])[0] is not None:
+        return parameters['log_type']
+
+    local_fname = os.path.basename(fname)
+    for ltype, regexp in LOG_TYPE_REGEXPS.items():
+        if re.search(regexp, local_fname) is not None:
+            return ltype
+
+    # oslo is the default
+    return 'oslo'
 
 
 def not_html(fname):
     return re.search('(\.html(\.gz)?)$', fname) is None
-
-
-def sev_of_line(line, oldsev="NONE"):
-    m = re.match(OSLO_LOGMATCH, line)
-    if m:
-        return m.group('status')
-
-    m = re.match(KEY_LOGMATCH, line)
-    if m:
-        return m.group('status')
-
-    return oldsev
-
-
-def color_by_sev(line, sev):
-    """Wrap a line in a span whose class matches it's severity."""
-    return "<span class='%s'>%s</span>" % (sev, line)
 
 
 def escape_html(line):
@@ -119,47 +156,14 @@ def escape_html(line):
     return cgi.escape(line)
 
 
-def link_timestamp(line):
-    m = re.match(
-        '(<span class=\'(?P<class>[^\']+)\'>)?(?P<comp>%s )?'
-        '(?P<date>%s)(?P<rest>.*)' % (KEY_COMPONENT, DATEFMT),
-        line)
-    if m:
-        date = "_" + re.sub('[\s\:\.\,]', '_', m.group('date'))
+def passthrough_filter(fname, minsev, environ):
+    parameters = cgi.parse_qs(environ.get('QUERY_STRING', ''))
 
-        # everyone that got this far had a date
-        line = "<a name='%s' class='date' href='#%s'>%s</a>%s\n" % (
-            date, date, m.group('date'), m.group('rest'))
-        # if we found a keystone component, add it back
-        if m.group('comp'):
-            line = ("%s" % m.group('comp')) + line
-
-        # if we found a severity class, put the spans back
-        if m.group('class'):
-            line = "</span><span class='%s %s'>%s" % (
-                m.group('class'), date, line)
-
-    return line
-
-
-def skip_line_by_sev(sev, minsev):
-    """should we skip this line?
-
-    If the line severity is less than our minimum severity,
-    yes we should.
-    """
-    return SEVS.get(sev, 0) < SEVS.get(minsev, 0)
-
-
-def passthrough_filter(fname, minsev):
-    sev = "NONE"
-    supports_sev = file_supports_sev(fname)
+    matcher, _ = build_matcher_formatter(fname, parameters, minsev, None)
 
     for line in fileinput.FileInput(fname, openhook=fileinput.hook_compressed):
-        if supports_sev:
-            sev = sev_of_line(line, sev)
-
-            if skip_line_by_sev(sev, minsev):
+        if parameters.get('no_match', ['false'])[0].lower() == 'false':
+            if matcher.run(line, {}) is None:
                 continue
 
         yield line
@@ -183,18 +187,95 @@ def does_file_exist(fname):
     f.close()
 
 
-def html_filter(fname, minsev):
+def build_matcher_formatter(fname, parameters, minsev, styler):
+    # build base matcher and formatter
+    matcher = None
+    formatter = None
+
+    log_style = detect_log_type(fname, parameters)
+
+    if log_style == 'devstack':
+        formatter = outputter.StackLogOutputter(styler=styler)
+        matcher = parsers.DevstackMetadataMatcher()
+    elif log_style == 'console':
+        formatter = outputter.ConsoleLogOutputter(styler=styler)
+        matcher = parsers.ConsoleMetadataMatcher()
+    elif log_style == 'keystone':
+        invert_order = (parameters.get('invert_order', ['False'])[0].lower()
+                        == 'true')
+        formatter = outputter.KeystoneLogOutputter(styler=styler,
+                                                   invert_order=invert_order)
+        matcher = parsers.KeystoneMetadataMatcher()
+    else:  # oslo-style
+        formatter = outputter.LogOutputter(styler=styler)
+        matcher = parsers.MetadataMatcher()
+
+    # initialize options
+    supports_sev = file_supports_sev(fname, parameters)
+
+    should_skip_raw = True
+    if 'skip_raw' in parameters:
+        if cgi.escape(parameters['skip_raw'][0]).lower() == 'false':
+            should_skip_raw = False
+
+    skip_sources = []
+    if should_skip_raw:
+        skip_sources.append(r'\w+\.messaging\.io\.raw')
+
+    if 'skip_source' in parameters:
+        skip_sources.extend([cgi.escape(src).replace(' ', '+')
+                             for src in parameters['skip_source']])
+
+    # add on optional parts
+    if supports_sev:
+        levels_to_skip = [name for name, num in SEVS.items()
+                          if num < SEVS[minsev]]
+        if 'NONE' in levels_to_skip:
+            levels_to_skip.append(None)
+        matcher = matcher.chain(parsers.LevelSkipper(levels_to_skip))
+
+    if log_style in ['olso', 'keystone']:
+        matcher = matcher.chain(parsers.SourceSkipper(skip_sources))
+
+    if log_style == 'oslo':
+        matcher = (matcher.chain(parsers.MessageMatcher())
+                   .chain(parsers.MessageOpMatcher()))
+    elif log_style == 'keystone':
+        matcher = matcher.chain(parsers.KeystoneMessageOpMatcher())
+
+    if not not_html(fname):
+        matcher = matcher.chain(parsers.PreTagSkipper())
+
+#    if log_style in ['oslo', 'keystone']:
+#        matcher = matcher.chain(parsers.MessageTypeSkipper())
+
+    # add on the body matcher
+    matcher = matcher.chain(parsers.MessageBodyMatcher())
+
+    # return the results
+    return (matcher, formatter)
+
+
+def html_filter(fname, minsev, environ):
     """Generator to read logs and output html in a stream.
 
     This produces a stream of the htmlified logs which lets us return
     data quickly to the user, and use minimal memory in the process.
     """
-
-    supports_sev = file_supports_sev(fname)
-    sev = "NONE"
     should_escape = not_html(fname)
 
-    yield _css_preamble(supports_sev)
+    parameters = cgi.parse_qs(environ.get('QUERY_STRING', ''))
+
+    supports_sev = file_supports_sev(fname, parameters)
+
+    matcher, formatter = build_matcher_formatter(fname,
+                                                 parameters,
+                                                 minsev,
+                                                 printer.HTMLStyler())
+
+    yield _css_preamble(supports_sev,
+                        parameters.get('level', ['NONE'])[0],
+                        parameters)
 
     for line in fileinput.FileInput(fname, openhook=fileinput.hook_compressed):
         if should_escape:
@@ -202,26 +283,38 @@ def html_filter(fname, minsev):
         else:
             newline = line
 
-        if supports_sev:
-            sev = sev_of_line(newline, sev)
-            if skip_line_by_sev(sev, minsev):
-                continue
-            newline = color_by_sev(newline, sev)
+        res = matcher.run(newline, {})
 
-        newline = link_timestamp(newline)
-        yield newline
+        if res is None:
+            continue
+
+        yield formatter.output(res[0])
     yield _html_close()
 
 
 def htmlify_stdin():
-    minsev = "NONE"
     out = sys.stdout
-    out.write(_css_preamble())
+    out.write(_css_preamble(True, 'NONE', {}))
+
+    skip_sources = [r'\w+\.messaging\.io\.raw']
+
+    formatter = outputter.LogOutputter(styler=printer.HTMLStyler())
+    matcher = (parsers.MetadataMatcher()
+               .chain(parsers.SourceSkipper(skip_sources))
+               .chain(parsers.MessageMatcher())
+               .chain(parsers.MessageOpMatcher())
+               #.chain(parsers.MessageTypeSkipper())
+               .chain(parsers.MessageBodyMatcher()))
+
     for line in fileinput.FileInput():
         newline = escape_html(line)
-        newline = color_by_sev(newline, minsev)
-        newline = link_timestamp(newline)
-        out.write(newline)
+
+        res = matcher.run(newline, {})
+        if res is None:
+            continue
+
+        out.write(formatter.output(res[0]))
+
     out.write(_html_close())
 
 
@@ -267,7 +360,7 @@ def should_be_html(environ):
 
 
 def get_min_sev(environ):
-    print environ.get('QUERY_STRING')
+    print(environ.get('QUERY_STRING'))
     parameters = cgi.parse_qs(environ.get('QUERY_STRING', ''))
     if 'level' in parameters:
         return cgi.escape(parameters['level'][0])
@@ -298,13 +391,13 @@ def application(environ, start_response, root_path=None):
         if should_be_html(environ):
             response_headers = [('Content-type', 'text/html')]
             does_file_exist(logpath)
-            generator = html_filter(logpath, minsev)
+            generator = html_filter(logpath, minsev, environ)
             start_response(status, response_headers)
             return generator
         else:
             response_headers = [('Content-type', 'text/plain')]
             does_file_exist(logpath)
-            generator = passthrough_filter(logpath, minsev)
+            generator = passthrough_filter(logpath, minsev, environ)
             start_response(status, response_headers)
             return generator
     except IOError:

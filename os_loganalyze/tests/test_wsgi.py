@@ -69,7 +69,7 @@ class TestKnownFiles(base.TestCase):
     files = {
         'screen-c-api.txt.gz': {
             'TOTAL': 3695,
-            'DEBUG': 2906,
+            'DEBUG': 2804,
             'INFO': 486,
             'AUDIT': 249,
             'TRACE': 0,
@@ -79,9 +79,7 @@ class TestKnownFiles(base.TestCase):
         'screen-key.txt.gz': {
             'TOTAL': 144983,
             'DEBUG': 129842,
-            # there is curiousness in the fact that keystone logs have a lot
-            # of blank lines, so INFO is higher than you think it should be
-            'INFO': 15131,
+            'INFO': 9079,
             'AUDIT': 0,
             'WARNING': 6,
             'TRACE': 0,
@@ -89,8 +87,8 @@ class TestKnownFiles(base.TestCase):
             },
         'screen-n-api.txt.gz': {
             'TOTAL': 50745,
-            'DEBUG': 46071,
-            'INFO': 4388,
+            'DEBUG': 11886,
+            'INFO': 2721,
             'AUDIT': 271,
             'TRACE': 0,
             'WARNING': 6,
@@ -98,7 +96,7 @@ class TestKnownFiles(base.TestCase):
             },
         'screen-q-svc.txt.gz': {
             'TOTAL': 47887,
-            'DEBUG': 46912,
+            'DEBUG': 43584,
             'INFO': 262,
             'AUDIT': 0,
             'TRACE': 589,
@@ -151,7 +149,8 @@ class TestKnownFiles(base.TestCase):
                 if level == 'TOTAL':
                     continue
 
-                gen = self.get_generator(fname, level=level, html=False)
+                gen = self.get_generator(fname, level=level, html=False,
+                                         skip_raw=False)
 
                 counts = self.count_types(gen)
                 total = self.compute_total(level, fname)
